@@ -16,11 +16,6 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-# def load_raw(path: str | Path = "Everything merged 18.12._new.xlsx") -> pd.DataFrame:
-#     """Read the original raw dataset (N=110, 71 columns)."""
-#     return pd.read_excel(path)
-
-
 def load_clean(path: str | Path = "df-clean-01.csv") -> pd.DataFrame:
     """Read a cleaned dataset from CSV or Excel."""
     path = Path(path)

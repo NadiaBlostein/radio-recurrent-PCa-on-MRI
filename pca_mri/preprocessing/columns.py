@@ -89,15 +89,6 @@ DEFAULT_COL_MAP: dict[str, str] = {
     "pet.ResultatRecInvRadiative": "pet-result",
 }
 
-# Columns to drop because they are exact duplicates of PatientID
-_KNOWN_DUPLICATE_ID_COLS = [
-    "RecInvbiopsie.PatientID",
-    "all patients.PatientId",
-    "pet.PatientID",
-    "date treatment.PatientId",
-    "date treatment.TypeTX",
-]
-
 # Logical column order for the cleaned dataset
 _COLUMN_ORDER_PREFIXES = [
     "patient_id",
@@ -130,15 +121,16 @@ def drop_duplicate_columns(df):
 
     Parameters
     ----------
-    df:         Input DataFrame.
+    df: Input DataFrame.
 
     Returns
     -------
-    (dropped_column_names)
+    remove_cols: List of columns to remove
     """
 
     cols = df.columns.tolist()
     remove_cols = []
+    same_cols = []
 
     for i, col_i in enumerate(cols):
         if col_i in remove_cols:
@@ -150,8 +142,9 @@ def drop_duplicate_columns(df):
             mask = df[col_i].notna() & df[col_j].notna()
             if mask.sum() > 0 and (df[col_i][mask] == df[col_j][mask]).all():
                 remove_cols.append(col_j)
+                same_cols.append(f"{col_i} same as {col_j}")
 
-    return remove_cols
+    return same_cols, remove_cols
 
 
 def rename_columns(
