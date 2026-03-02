@@ -9,6 +9,8 @@ Research project completed at University College Cork for the module MX3022: Res
 * `data-cleanup.ipynb`: comprehensive record of all modifications applied to the initial dataset (`Everything merged 18.12._new.xlsx`).
 
 ## 🔐 Private Files
+* `df-clean-01.csv`: cleaned up data file
+* `meta-data-clean.xlsx`: cleaned up meta data file
 * `Everything merged 18.12._new.xlsx`: original raw dataset provided by Dr. Taussky.
 * `meta-data.xlsx`:  reference file detailing variable name changes, descriptions, and related notes or observations.
 
