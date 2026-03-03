@@ -83,35 +83,35 @@ def flag_converter_patients(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def flag_weird_patients(
-    df: pd.DataFrame,
-    threshold: float = 1.8,
-) -> pd.DataFrame:
-    """Add a ``psa_doubled`` boolean column.
+# def flag_weird_patients(
+#     df: pd.DataFrame,
+#     threshold: float = 1.8,
+# ) -> pd.DataFrame:
+#     """Add a ``psa_doubled`` boolean column.
 
-    A patient is flagged if their PSA at MRI 2 is ≥ ``threshold`` × their PSA
-    at MRI 1. Default threshold of 1.8 (~doubling) matches the clinical
-    observation in the TO-DOs.
+#     A patient is flagged if their PSA at MRI 2 is ≥ ``threshold`` × their PSA
+#     at MRI 1. Default threshold of 1.8 (~doubling) matches the clinical
+#     observation in the TO-DOs.
 
-    Known cases: 2102593, 2205490, 2162006.
+#     Known cases: 2102593, 2205490, 2162006.
 
-    Parameters
-    ----------
-    df:        Input DataFrame.
-    threshold: Ratio mri_2_psa / mri_1_psa above which a patient is flagged.
+#     Parameters
+#     ----------
+#     df:        Input DataFrame.
+#     threshold: Ratio mri_2_psa / mri_1_psa above which a patient is flagged.
 
-    Returns
-    -------
-    df with ``psa_doubled`` column added.
-    """
-    df = df.copy()
+#     Returns
+#     -------
+#     df with ``psa_doubled`` column added.
+#     """
+#     df = df.copy()
 
-    if "mri_1-psa" in df.columns and "mri_2-psa" in df.columns:
-        ratio = pd.to_numeric(df["mri_2-psa"], errors="coerce") / pd.to_numeric(
-            df["mri_1-psa"], errors="coerce"
-        )
-        df["psa_doubled"] = ratio >= threshold
-    else:
-        df["psa_doubled"] = False
+#     if "mri_1-psa" in df.columns and "mri_2-psa" in df.columns:
+#         ratio = pd.to_numeric(df["mri_2-psa"], errors="coerce") / pd.to_numeric(
+#             df["mri_1-psa"], errors="coerce"
+#         )
+#         df["psa_doubled"] = ratio >= threshold
+#     else:
+#         df["psa_doubled"] = False
 
-    return df
+#     return df
