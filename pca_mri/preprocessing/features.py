@@ -13,6 +13,7 @@ add_biopsy_ratio(df)            biopsy-positive_ratio column.
 add_time_to_recurrence(df)      time_to_recurrence_days column.
 add_mri_intervals(df)           mri_N_to_M_days columns.
 add_psa_doubling_time(df)       psa_doubling_time_months column.
+add_time_to_bf(df)              time_to_bf-days column.
 add_all_features(df)            Convenience wrapper — calls all of the above.
 """
 
@@ -21,33 +22,70 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+_POSITIVE_VALUES = {"positive", "positif", "positiv"}
+_NEGATIVE_VALUES = {"negative", "negativ", "négative", "négatif"}
 
-def add_biopsy_ratio(df: pd.DataFrame) -> pd.DataFrame:
-    """Add ``biopsy-positive_ratio`` = positive samples / samples taken.
+
+def add_biopsy_ratio(df_in: pd.DataFrame) -> pd.DataFrame:
+    """Add ``tx-biopsy_positive_ratio`` = positive samples / samples taken.
 
     Requires columns ``tx-biopsy_num_positive`` and ``tx-biopsy_num_samples``.
     Rows where either value is NaN or samples = 0 produce NaN.
     """
-    df = df.copy()
+    df = df_in.copy()
     if "tx-biopsy_num_positive" in df.columns and "tx-biopsy_num_samples" in df.columns:
         pos = pd.to_numeric(df["tx-biopsy_num_positive"], errors="coerce")
         total = pd.to_numeric(df["tx-biopsy_num_samples"], errors="coerce")
-        df["biopsy-positive_ratio"] = pos / total.replace(0, np.nan)
+        df["tx-biopsy_positive_ratio"] = pos / total.replace(0, np.nan)
     return df
 
 
-def add_time_to_recurrence(df: pd.DataFrame) -> pd.DataFrame:
-    """Add ``time_to_recurrence_days`` = days from treatment to first positive MRI.
+def add_time_to_bf(df_in: pd.DataFrame) -> pd.DataFrame:
+    """Add ``time_to_bf-days`` = days from treatment to biochemical failure.
 
-    Uses ``tx-date`` as the reference date and ``mri_1-date`` as the event date.
-    Negative values (MRI before tx) are set to NaN.
+    Requires columns ``tx-date`` and ``bf-date``.
+    Rows where either date is NaN produce NaN.
     """
-    df = df.copy()
-    if "tx-date" in df.columns and "mri_1-date" in df.columns:
+    df = df_in.copy()
+    if "tx-date" in df.columns and "bf-date" in df.columns:
         tx = pd.to_datetime(df["tx-date"], errors="coerce")
-        mri = pd.to_datetime(df["mri_1-date"], errors="coerce")
-        delta = (mri - tx).dt.days
-        df["time_to_recurrence_days"] = delta.where(delta >= 0)
+        bf = pd.to_datetime(df["bf-date"], errors="coerce")
+        df["time_to_bf-days"] = (bf - tx).dt.days
+    return df
+
+
+def add_time_to_recurrence_MRI(df_in: pd.DataFrame) -> pd.DataFrame:
+    """
+    Finds the first positive MRI date for each patient and calculates the interval in days from treatment to that date. 
+    
+    Adds the following 3 columns:
+        - ``rec_mri-index``: 0 if no positive MRI, otherwise the index (1–4) of the first positive MRI visit.
+        - ``rec_mri-date``: the date of the first positive MRI, or NaT if none.
+        - ``rec_MRI-time_to_rec-days``: 0 if no positive MRI, otherwise the number of days from treatment to the first positive MRI.
+    
+    """
+    df = df_in.copy()
+
+    for i in range(1, 5):
+        df[f"mri_{i}-result"] = (
+            df[f"mri_{i}-result"].astype(str).str.strip().str.lower())
+
+    def extract_recurrence(row):
+        for i in range(1, 5):
+            result = row[f"mri_{i}-result"]
+            if result in _POSITIVE_VALUES:
+                rec_date = row[f"mri_{i}-date"]
+                if pd.notna(rec_date) and pd.notna(row["tx-date"]):
+                    delta_days = (rec_date - row["tx-date"]).days
+                else:
+                    delta_days = np.nan
+                return pd.Series([i, rec_date, delta_days])
+        # No positive MRI found
+        return pd.Series([0, np.nan, 0])
+    
+    df[["rec_mri-index", "rec_mri-date", "time_to_recurrence-days"]] = \
+        df.apply(extract_recurrence, axis=1)
+
     return df
 
 
@@ -116,16 +154,12 @@ def add_psa_doubling_time(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_all_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Apply all feature-engineering steps in sequence.
-
-    Calls, in order:
-    1. add_biopsy_ratio
-    2. add_time_to_recurrence
-    3. add_mri_intervals
-    4. add_psa_doubling_time
+    """
+    Apply all feature-engineering steps in sequence.
     """
     df = add_biopsy_ratio(df)
-    df = add_time_to_recurrence(df)
-    df = add_mri_intervals(df)
-    df = add_psa_doubling_time(df)
+    df = add_time_to_bf(df)
+    df = add_time_to_recurrence_MRI(df)
+    # df = add_mri_intervals(df)
+    # df = add_psa_doubling_time(df)
     return df
