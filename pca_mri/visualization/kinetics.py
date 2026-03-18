@@ -53,6 +53,9 @@ def plot_psa_doubling_time(df: pd.DataFrame) -> plt.Figure:
     n_excl_rec  = (psa_dt_rec.abs()  > clip).sum()
     psa_dt_rec  = psa_dt_rec[psa_dt_rec.abs()   <= clip]
 
+    mean_diff = psa_diff.mean()
+    mean_dt   = psa_dt_rec.mean()
+
     fig, axes = plt.subplots(1, 2, figsize=(10, 5))
 
     # Left panel: PSA difference
@@ -79,6 +82,12 @@ def plot_psa_doubling_time(df: pd.DataFrame) -> plt.Figure:
     axes[1].set_ylabel("PSA doubling time (months)")
     axes[1].set_title(f"PSA-DT to recurrence MRI\n(excluded |DT|>{clip} mo: {n_excl_rec})")
 
+    fig.suptitle(
+        f"PSA Kinetics at Recurrence MRI — "
+        f"Mean PSA diff: {mean_diff:.2f}, Mean PSA-DT: {mean_dt:.1f} mo",
+        fontsize=11,
+        y=1.02,
+    )
     fig.tight_layout()
     return fig
 

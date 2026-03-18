@@ -338,7 +338,7 @@ def save_interactive_explorer(
     *,
     cat_cols: list[tuple[str, str]] | None = None,
     cont_cols: list[tuple[str, str]] | None = None,
-    title: str = "Descriptive Statistics Explorer",
+    title: str = "Distribution Explorer",
     subtitle: str | None = (
         "Select a categorical and continuous variable to explore "
         "their distributions."
@@ -376,6 +376,7 @@ def save_interactive_explorer(
     from pca_mri.visualization.descriptive_plots import (
         plot_kde,
         plot_category_bar,
+        plot_histogram,
     )
     from pca_mri.analysis.descriptive import _CATEGORICAL, _CONTINUOUS
 
@@ -386,18 +387,33 @@ def save_interactive_explorer(
     if cont_cols is None:
         cont_cols = [(col, lbl) for col, lbl in _CONTINUOUS if col in df.columns]
 
+    # Pre-render bar figures: key = "cat_col|cont_col" → Plotly JSON
+    bar_specs: dict[str, str] = {}
+    for cat_col, _ in cat_cols:
+        for cont_col, cont_label in cont_cols:
+            fig = plot_category_bar(df, cat_col, cont_col, height=bar_height)
+            # Add mean values to hover text for each category
+            for trace in fig.data:
+                categories = trace.x
+                means = [df[df[cat_col] == cat][cont_col].mean() for cat in categories]
+                trace.customdata = means
+                trace.hovertemplate = f"<b>%{{x}}</b><br>Mean {cont_label}: %{{customdata:.2f}}<extra></extra>"
+            bar_specs[f"{cat_col}|{cont_col}"] = fig.to_json()
+
+    # Pre-render histogram figures: key = "cat_col|cont_col" → Plotly JSON
+    hist_specs: dict[str, str] = {}
+    for cat_col, _ in cat_cols:
+        for cont_col, _ in cont_cols:
+            fig = plot_histogram(df, cat_col, cont_col, height=kde_height)
+            hist_specs[f"{cat_col}|{cont_col}"] = fig.to_json()
+
+
     # Pre-render KDE figures: key = "cat_col|cont_col" → Plotly JSON
     kde_specs: dict[str, str] = {}
     for cat_col, _ in cat_cols:
         for cont_col, _ in cont_cols:
             fig = plot_kde(df, cat_col, cont_col, height=kde_height)
             kde_specs[f"{cat_col}|{cont_col}"] = fig.to_json()
-
-    # Pre-render bar figures: key = "cat_col" → Plotly JSON
-    bar_specs: dict[str, str] = {}
-    for cat_col, _ in cat_cols:
-        fig = plot_category_bar(df, cat_col, height=bar_height)
-        bar_specs[cat_col] = fig.to_json()
 
     # Build dropdown HTML
     cat_options_html = "\n".join(
@@ -422,8 +438,9 @@ def save_interactive_explorer(
             entries.append(f"    {json.dumps(key)}: {val}")
         return "{\n" + ",\n".join(entries) + "\n  }"
 
-    kde_js = _js_object(kde_specs)
     bar_js = _js_object(bar_specs)
+    hist_js = _js_object(hist_specs)
+    kde_js = _js_object(kde_specs)
 
     page = f"""<!DOCTYPE html>
 <html lang="en">
@@ -453,7 +470,7 @@ def save_interactive_explorer(
       font-size: 14px;
       min-width: 320px;
     }}
-    #kde-plot, #bar-plot {{
+    #bar-plot, #hist-plot, #kde-plot {{
       margin-bottom: 30px;
     }}
   </style>
@@ -477,28 +494,36 @@ def save_interactive_explorer(
     </div>
   </div>
 
-  <div id="kde-plot"></div>
   <div id="bar-plot"></div>
+  <div id="hist-plot"></div>
+  <div id="kde-plot"></div>
 
   <script>
     var kdeSpecs = {kde_js};
     var barSpecs = {bar_js};
+    var histSpecs = {hist_js};
 
     function update() {{
       var cat  = document.getElementById('cat-select').value;
       var cont = document.getElementById('cont-select').value;
+      var comboKey = cat + '|' + cont;
 
-      // Update KDE plot
-      var kdeKey = cat + '|' + cont;
-      var kdeSpec = kdeSpecs[kdeKey];
-      if (kdeSpec) {{
-        Plotly.react('kde-plot', kdeSpec.data, kdeSpec.layout);
-      }}
-
-      // Update bar plot (depends only on categorical)
-      var barSpec = barSpecs[cat];
+      // Update bar plot (depends on both categorical and continuous)
+      var barSpec = barSpecs[comboKey];
       if (barSpec) {{
         Plotly.react('bar-plot', barSpec.data, barSpec.layout);
+      }}
+
+      // Update histogram plot
+      var histSpec = histSpecs[comboKey];
+      if (histSpec) {{
+        Plotly.react('hist-plot', histSpec.data, histSpec.layout);
+      }}
+
+      // Update KDE plot
+      var kdeSpec = kdeSpecs[comboKey];
+      if (kdeSpec) {{
+        Plotly.react('kde-plot', kdeSpec.data, kdeSpec.layout);
       }}
     }}
 
@@ -506,6 +531,142 @@ def save_interactive_explorer(
     document.getElementById('cont-select').addEventListener('change', update);
     update();
   </script>
+</body>
+</html>
+"""
+
+    with open(output_path, "w") as f:
+        f.write(page)
+    print(f"Saved: {output_path}")
+
+
+def save_composite(
+    items: Sequence[tuple[str, object]],
+    output_path: str | Path,
+    *,
+    title: str = "",
+    subtitle: str | None = None,
+) -> None:
+    """Export a sequence of figures and/or tables into a single HTML file.
+
+    Each item is rendered as its own section, stacked vertically with a
+    clear heading.  Supported object types:
+
+    * **Plotly figure** (``plotly.graph_objects.Figure``) — embedded via
+      ``to_html(full_html=False)``.
+    * **Matplotlib figure** (``matplotlib.figure.Figure``) — rasterised to
+      a base-64 PNG ``<img>`` tag.
+    * **Pandas Styler** (``pd.io.formats.style.Styler``) — rendered inside
+      an auto-resizing ``<iframe>`` to isolate table CSS.
+    * **Raw HTML string** — inserted verbatim.
+
+    Parameters
+    ----------
+    items : sequence of (heading, object) tuples
+        Each tuple contains a section heading (``str``, may be empty) and
+        the renderable object.
+    output_path : str | Path
+        Destination HTML file.
+    title : str
+        Page-level ``<h2>`` heading rendered at the top.
+    subtitle : str, optional
+        Grey description text below the page heading.
+    """
+    import base64
+    import io as _io
+
+    _ensure_dir(output_path)
+
+    subtitle_html = (
+        f'<p class="desc-text">{subtitle}</p>' if subtitle else ""
+    )
+
+    sections: list[str] = []
+    plotly_needed = False
+    iframe_counter = 0
+
+    for heading, obj in items:
+        heading_html = f'<h3 style="color:white; margin-top:30px;">{heading}</h3>' if heading else ""
+
+        # ── Plotly figure ──
+        try:
+            import plotly.graph_objects as go
+            if isinstance(obj, go.Figure):
+                plotly_needed = True
+                div = obj.to_html(full_html=False, include_plotlyjs=False)
+                sections.append(f'{heading_html}\n{div}')
+                continue
+        except ImportError:
+            pass
+
+        # ── Matplotlib figure ──
+        try:
+            import matplotlib.figure
+            if isinstance(obj, matplotlib.figure.Figure):
+                buf = _io.BytesIO()
+                obj.savefig(buf, format="png", bbox_inches="tight",
+                            facecolor=obj.get_facecolor(), dpi=150)
+                buf.seek(0)
+                b64 = base64.b64encode(buf.read()).decode("ascii")
+                buf.close()
+                sections.append(
+                    f'{heading_html}\n'
+                    f'<img src="data:image/png;base64,{b64}" '
+                    f'style="max-width:100%; height:auto; display:block; '
+                    f'margin:10px 0;" />'
+                )
+                continue
+        except ImportError:
+            pass
+
+        # ── Pandas Styler ──
+        if hasattr(obj, "to_html") and not isinstance(obj, str):
+            table_html = obj.to_html()
+            iframe_id = f"composite-iframe-{iframe_counter}"
+            iframe_counter += 1
+            sections.append(
+                f'{heading_html}\n'
+                f'<div class="table-frame">'
+                f'<iframe id="{iframe_id}" style="width:100%; border:none; '
+                f'min-height:120px; background:#1a1a2e;"></iframe></div>\n'
+                f'<script>(function(){{'
+                f'var f=document.getElementById("{iframe_id}");'
+                f'var d=f.contentDocument||f.contentWindow.document;'
+                f'd.open();d.write({json.dumps(table_html)});d.close();'
+                f'function resize(){{f.style.height=d.body.scrollHeight+40+"px";}}'
+                f'f.onload=resize;setTimeout(resize,200);'
+                f'}})()</script>'
+            )
+            continue
+
+        # ── Raw HTML string ──
+        if isinstance(obj, str):
+            sections.append(f'{heading_html}\n{obj}')
+            continue
+
+        raise TypeError(
+            f"Unsupported item type {type(obj).__name__!r}. Expected a Plotly "
+            f"figure, matplotlib figure, pandas Styler, or HTML string."
+        )
+
+    plotly_js = (
+        '<script src="https://cdn.plot.ly/plotly-latest.min.js"></script>'
+        if plotly_needed else ""
+    )
+
+    page = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{title}</title>
+  {plotly_js}
+  <style>{_CSS}</style>
+</head>
+<body>
+  <h2>{title}</h2>
+  {subtitle_html}
+  {"".join(f'<div class="section">{s}</div>' for s in sections)}
 </body>
 </html>
 """

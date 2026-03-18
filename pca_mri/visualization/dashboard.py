@@ -91,6 +91,127 @@ def panel_prevalence(df: pd.DataFrame) -> go.Figure:
     return fig
 
 
+    def panel_prevalence_by_biopsy(df: pd.DataFrame) -> go.Figure:
+        """Bar chart: MRI+ prevalence stratified by biopsy result."""
+        by_biopsy = diagnostic.prevalence_by_subgroup(df, by="biopsy-result")
+        
+        groups = list(by_biopsy["group"])
+        prevs = list(by_biopsy["prevalence"])
+        ci_lo = list(by_biopsy["ci_lower"])
+        ci_hi = list(by_biopsy["ci_upper"])
+        ns = list(by_biopsy["n_positive"].astype(str) + "/" + by_biopsy["n_total"].astype(str))
+        
+        colors = [COLORS["biopsy_pos"], COLORS["biopsy_neg"]]
+        
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=groups,
+            y=[p * 100 for p in prevs],
+            error_y=dict(
+                type="data",
+                symmetric=False,
+                array=[(h - p) * 100 for h, p in zip(ci_hi, prevs)],
+                arrayminus=[(p - l) * 100 for l, p in zip(ci_lo, prevs)],
+            ),
+            marker_color=colors[:len(groups)],
+            text=[f"{p*100:.1f}%<br>({n})" for p, n in zip(prevs, ns)],
+            textposition="outside",
+            hovertemplate="%{x}<br>Prevalence: %{y:.1f}%<br>95% CI: [%{customdata[0]:.1f}%, %{customdata[1]:.1f}%]<extra></extra>",
+            customdata=list(zip([l*100 for l in ci_lo], [h*100 for h in ci_hi])),
+        ))
+        fig.update_layout(
+            title="MRI-Positive Recurrence Prevalence by Biopsy Result",
+            yaxis_title="Prevalence (%)",
+            yaxis_range=[0, 105],
+            template="plotly_dark",
+            height=400,
+            showlegend=False,
+        )
+        return fig
+
+
+    def panel_prevalence_by_treatment(df: pd.DataFrame) -> go.Figure:
+        """Bar chart: MRI+ prevalence stratified by treatment type."""
+        by_tx = diagnostic.prevalence_by_subgroup(df, by="tx-type")
+        
+        groups = list(by_tx["group"])
+        prevs = list(by_tx["prevalence"])
+        ci_lo = list(by_tx["ci_lower"])
+        ci_hi = list(by_tx["ci_upper"])
+        ns = list(by_tx["n_positive"].astype(str) + "/" + by_tx["n_total"].astype(str))
+        
+        colors = [COLORS["ldr"], COLORS["hdr"], COLORS["rt"]]
+        while len(colors) < len(groups):
+            colors.append("#AB63FA")
+        
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=groups,
+            y=[p * 100 for p in prevs],
+            error_y=dict(
+                type="data",
+                symmetric=False,
+                array=[(h - p) * 100 for h, p in zip(ci_hi, prevs)],
+                arrayminus=[(p - l) * 100 for l, p in zip(ci_lo, prevs)],
+            ),
+            marker_color=colors[:len(groups)],
+            text=[f"{p*100:.1f}%<br>({n})" for p, n in zip(prevs, ns)],
+            textposition="outside",
+            hovertemplate="%{x}<br>Prevalence: %{y:.1f}%<br>95% CI: [%{customdata[0]:.1f}%, %{customdata[1]:.1f}%]<extra></extra>",
+            customdata=list(zip([l*100 for l in ci_lo], [h*100 for h in ci_hi])),
+        ))
+        fig.update_layout(
+            title="MRI-Positive Recurrence Prevalence by Treatment Type",
+            yaxis_title="Prevalence (%)",
+            yaxis_range=[0, 105],
+            template="plotly_dark",
+            height=400,
+            showlegend=False,
+        )
+        return fig
+
+
+    def panel_prevalence_by_capra(df: pd.DataFrame) -> go.Figure:
+        """Bar chart: MRI+ prevalence stratified by CAPRA risk group."""
+        by_capra = diagnostic.prevalence_by_subgroup(df, by="psa-capra_group")
+        
+        groups = list(by_capra["group"])
+        prevs = list(by_capra["prevalence"])
+        ci_lo = list(by_capra["ci_lower"])
+        ci_hi = list(by_capra["ci_upper"])
+        ns = list(by_capra["n_positive"].astype(str) + "/" + by_capra["n_total"].astype(str))
+        
+        colors = [COLORS["ldr"], COLORS["sig"], COLORS["hdr"]]
+        while len(colors) < len(groups):
+            colors.append("#AB63FA")
+        
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=groups,
+            y=[p * 100 for p in prevs],
+            error_y=dict(
+                type="data",
+                symmetric=False,
+                array=[(h - p) * 100 for h, p in zip(ci_hi, prevs)],
+                arrayminus=[(p - l) * 100 for l, p in zip(ci_lo, prevs)],
+            ),
+            marker_color=colors[:len(groups)],
+            text=[f"{p*100:.1f}%<br>({n})" for p, n in zip(prevs, ns)],
+            textposition="outside",
+            hovertemplate="%{x}<br>Prevalence: %{y:.1f}%<br>95% CI: [%{customdata[0]:.1f}%, %{customdata[1]:.1f}%]<extra></extra>",
+            customdata=list(zip([l*100 for l in ci_lo], [h*100 for h in ci_hi])),
+        ))
+        fig.update_layout(
+            title="MRI-Positive Recurrence Prevalence by CAPRA Risk Group",
+            yaxis_title="Prevalence (%)",
+            yaxis_range=[0, 105],
+            template="plotly_dark",
+            height=400,
+            showlegend=False,
+        )
+        return fig
+
+
 def panel_contingency(df: pd.DataFrame) -> go.Figure:
     """Annotated heatmap: MRI vs biopsy 2x2 table."""
     ct = diagnostic.contingency_table(df)

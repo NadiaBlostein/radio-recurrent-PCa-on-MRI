@@ -112,9 +112,76 @@ def plot_kde(
     return fig
 
 
+def plot_histogram(
+    df: pd.DataFrame,
+    cat_col: str,
+    cont_col: str,
+    *,
+    height: int = 420,
+) -> go.Figure:
+    """Stacked histogram of *cont_col* stratified by *cat_col* (patient counts).
+
+    Replicates the behaviour of ``distributions.plot_age_distribution`` but
+    generalised to any continuous/categorical pair and rendered with Plotly
+    so it integrates with the interactive explorer.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Cleaned patient dataframe.
+    cat_col : str
+        Categorical column used for colour grouping / stacking.
+    cont_col : str
+        Continuous column plotted on the x-axis.
+    height : int
+        Figure height in pixels (default 420).
+
+    Returns
+    -------
+    plotly.graph_objects.Figure
+    """
+    cat_label, cont_label = _resolve_labels(cat_col, cont_col)
+    cats = df[cat_col].dropna().unique()
+    colors = _category_colors(cats)
+
+    fig = go.Figure()
+    for cat_val in cats:
+        vals = (
+            df.loc[df[cat_col] == cat_val, cont_col]
+            .pipe(pd.to_numeric, errors="coerce")
+            .replace([np.inf, -np.inf], np.nan)
+            .dropna()
+        )
+        if vals.empty:
+            continue
+        fig.add_trace(go.Histogram(
+            x=vals,
+            name=str(cat_val),
+            marker_color=colors[cat_val],
+            opacity=0.75,
+            hovertemplate=(
+                f"<b>{cat_val}</b><br>"
+                f"{cont_label}: %{{x}}<br>"
+                f"Count: %{{y}}<extra></extra>"
+            ),
+        ))
+
+    fig.update_layout(
+        barmode="stack",
+        title=f"Distribution of <b>{cont_label}</b> stratified by <b>{cat_label}</b>",
+        xaxis_title=cont_label,
+        yaxis_title="Number of patients",
+        legend_title=cat_label,
+        template="plotly_dark",
+        height=height,
+    )
+    return fig
+
+
 def plot_category_bar(
     df: pd.DataFrame,
     cat_col: str,
+    cont_col: str | None = None,
     *,
     height: int = 380,
 ) -> go.Figure:
@@ -126,6 +193,9 @@ def plot_category_bar(
         Cleaned patient dataframe.
     cat_col : str
         Categorical column to visualise.
+    cont_col : str, optional
+        Continuous column whose mean/min/max are shown on hover per
+        category and whose overall mean is included in the title.
     height : int
         Figure height in pixels (default 380).
 
@@ -133,15 +203,60 @@ def plot_category_bar(
     -------
     plotly.graph_objects.Figure
     """
-    cat_label, _ = _resolve_labels(cat_col)
+    cat_label, cont_label = _resolve_labels(cat_col, cont_col)
     cats = df[cat_col].dropna().unique()
     colors = _category_colors(cats)
     total = int(df[cat_col].notna().sum())
 
+    # Compute overall mean of the continuous variable (if provided)
+    overall_mean = None
+    if cont_col is not None:
+        cont_vals = (
+            df[cont_col]
+            .pipe(pd.to_numeric, errors="coerce")
+            .replace([np.inf, -np.inf], np.nan)
+            .dropna()
+        )
+        if len(cont_vals):
+            overall_mean = cont_vals.mean()
+
     fig = go.Figure()
     for cat_val in cats:
-        count = int((df[cat_col] == cat_val).sum())
+        mask = df[cat_col] == cat_val
+        count = int(mask.sum())
         pct = count / total * 100 if total else 0
+
+        # Build hover text
+        if cont_col is not None:
+            cat_cont = (
+                df.loc[mask, cont_col]
+                .pipe(pd.to_numeric, errors="coerce")
+                .replace([np.inf, -np.inf], np.nan)
+                .dropna()
+            )
+            if len(cat_cont):
+                hover = (
+                    f"<b>{cat_val}</b><br>"
+                    f"N = {count}<br>"
+                    f"{pct:.1f}% of {total}<br>"
+                    f"Mean {cont_label}: {cat_cont.mean():.2f}<br>"
+                    f"Min {cont_label}: {cat_cont.min():.2f}<br>"
+                    f"Max {cont_label}: {cat_cont.max():.2f}"
+                    f"<extra></extra>"
+                )
+            else:
+                hover = (
+                    f"<b>{cat_val}</b><br>"
+                    f"N = {count}<br>"
+                    f"{pct:.1f}% of {total}<extra></extra>"
+                )
+        else:
+            hover = (
+                f"<b>{cat_val}</b><br>"
+                f"N = {count}<br>"
+                f"{pct:.1f}% of {total}<extra></extra>"
+            )
+
         fig.add_trace(go.Bar(
             name=str(cat_val),
             x=[cat_label],
@@ -149,16 +264,16 @@ def plot_category_bar(
             marker_color=colors[cat_val],
             text=f"{cat_val}<br>N={count} ({pct:.1f}%)",
             textposition="inside",
-            hovertemplate=(
-                f"<b>{cat_val}</b><br>"
-                f"N = {count}<br>"
-                f"{pct:.1f}% of {total}<extra></extra>"
-            ),
+            hovertemplate=hover,
         ))
+
+    title_str = f"Distribution of <b>{cat_label}</b>"
+    if overall_mean is not None:
+        title_str += f" (Mean {cont_label} = {overall_mean:.2f})"
 
     fig.update_layout(
         barmode="stack",
-        title=f"Distribution of <b>{cat_label}</b>",
+        title=title_str,
         yaxis_title="Count",
         legend_title=cat_label,
         template="plotly_dark",
