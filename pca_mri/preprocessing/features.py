@@ -15,8 +15,9 @@ add_mri_intervals(df)           mri_N_to_M_days columns.
 add_psa_doubling_time(df)       psa_doubling_time_months column.
 add_time_to_bf(df)              bf-time_to_bf-days column.
 add_time_to_biopsy(df)          biopsy-time_to_biopsy-days column.
-add_psa_doubling_time(df)       psa_dt-rec_mri-months column.
-add_psa_doubling_time_mri1(df)  psa_dt-mri_1-months column.
+add_psa_timepoints(df)          psa_t1-val/date, psa_t2-val/date columns.
+add_psa_doubling_time_rec_mri(df) psa_dt-rec_mri-months column.
+add_psa_diff_rec_mri(df)        psa_diff-rec_mri-days column.
 add_bf_to_rec_mri(df)           bf_to_rec_mri-days column.
 add_all_features(df)            Convenience wrapper — calls all of the above.
 """
@@ -124,67 +125,110 @@ def add_time_to_recurrence_MRI(df_in: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def add_psa_doubling_time_rec_mri(df_in: pd.DataFrame) -> pd.DataFrame:
-    """
-    Add ``psa_dt-rec_mri-months``: PSA doubling time from baseline to first positive MRI.
+def add_psa_timepoints(df_in: pd.DataFrame) -> pd.DataFrame:
+    """Add PSA timepoint columns used by downstream doubling-time calculations.
 
-    Baseline PSA:  ``psa-val`` measured at ``tx-date`` + ``psa-time_since_tx`` days.
-    Endpoint PSA:  ``mri_{rec_mri-index}-psa`` at ``rec_mri-date``.
+    Columns added:
 
-    Formula: PSA-DT = (t₂ − t₁) × ln(2) / ln(PSA₂ / PSA₁), result in months.
+    * ``psa_t1-val``: baseline PSA value (same as ``psa-val``).
+    * ``psa_t1-date``: baseline PSA date = ``tx-date`` + ``psa-time_since_tx`` days.
+    * ``psa_t2-val``: PSA at the first *positive* MRI; if no MRI recurrence,
+      PSA at the first MRI visit.
+    * ``psa_t2-date``: date of the first positive MRI; date of the first MRI
+      if no recurrence.
 
-    Produces NaN when there is no positive MRI (``rec_mri-index`` is NaN), either
-    PSA is non-positive, or the time interval is zero or negative.
-
-    Requires ``add_time_to_recurrence_MRI`` to have been called first.
+    Requires ``add_time_to_recurrence_MRI`` to have been called first so that
+    ``rec_mri-index`` exists.
     """
     df = df_in.copy()
-    required = {"psa-val", "psa-time_since_tx", "tx-date", "rec_mri-index", "rec_mri-date"}
+    required = {"psa-val", "psa-time_since_tx", "tx-date"}
     if not required.issubset(df.columns):
         return df
 
-    psa1 = pd.to_numeric(df["psa-val"], errors="coerce")
-    date1 = pd.to_datetime(df["tx-date"], errors="coerce") + pd.to_timedelta(
+    # --- t1 (baseline) ---
+    df["psa_t1-val"] = pd.to_numeric(df["psa-val"], errors="coerce")
+    df["psa_t1-date"] = pd.to_datetime(df["tx-date"], errors="coerce") + pd.to_timedelta(
         pd.to_numeric(df["psa-time_since_tx"], errors="coerce"), unit="D"
     )
 
-    rec_index = pd.to_numeric(df["rec_mri-index"], errors="coerce")
-    date2 = pd.to_datetime(df["rec_mri-date"], errors="coerce")
-    psa2 = pd.Series(np.nan, index=df.index, dtype=float)
-    for i in range(1, 5):
-        col = f"mri_{i}-psa"
-        if col in df.columns:
-            mask = rec_index == i
-            psa2[mask] = pd.to_numeric(df.loc[mask, col], errors="coerce")
+    # --- t2 (recurrence MRI or first MRI) ---
+    rec_index = pd.to_numeric(df.get("rec_mri-index"), errors="coerce") if "rec_mri-index" in df.columns else pd.Series(np.nan, index=df.index)
+    has_rec = rec_index.notna()
 
-    df["psa_dt-rec_mri-months"] = _psa_doubling_time(psa1, date1, psa2, date2)
+    psa_t2 = pd.Series(np.nan, index=df.index, dtype=float)
+    date_t2 = pd.Series(pd.NaT, index=df.index)
+
+    # For patients WITH MRI recurrence: use the recurrence MRI PSA & date
+    for i in range(1, 5):
+        psa_col = f"mri_{i}-psa"
+        date_col = f"mri_{i}-date"
+        mask = has_rec & (rec_index == i)
+        if psa_col in df.columns:
+            psa_t2[mask] = pd.to_numeric(df.loc[mask, psa_col], errors="coerce")
+        if date_col in df.columns:
+            date_t2[mask] = pd.to_datetime(df.loc[mask, date_col], errors="coerce")
+
+    # For patients WITHOUT MRI recurrence: fall back to first MRI
+    no_rec = ~has_rec
+    if "mri_1-psa" in df.columns:
+        psa_t2[no_rec] = pd.to_numeric(df.loc[no_rec, "mri_1-psa"], errors="coerce")
+    if "mri_1-date" in df.columns:
+        date_t2[no_rec] = pd.to_datetime(df.loc[no_rec, "mri_1-date"], errors="coerce")
+
+    df["psa_t2-val"] = psa_t2
+    df["psa_t2-date"] = date_t2
+
     return df
 
 
-def add_psa_doubling_time_mri1(df_in: pd.DataFrame) -> pd.DataFrame:
-    """
-    Add ``psa_dt-mri_1-months``: PSA doubling time from baseline to first MRI visit.
+def add_psa_doubling_time_rec_mri(df_in: pd.DataFrame) -> pd.DataFrame:
+    """Add ``psa_dt-rec_mri-months``: PSA doubling time between t1 and t2.
 
-    Baseline PSA:  ``psa-val`` measured at ``tx-date`` + ``psa-time_since_tx`` days.
-    Endpoint PSA:  ``mri_1-psa`` at ``mri_1-date`` (regardless of MRI result).
+    Uses ``psa_t1-val/date`` and ``psa_t2-val/date`` (created by
+    ``add_psa_timepoints``).
 
-    Formula: PSA-DT = (t₂ − t₁) × ln(2) / ln(PSA₂ / PSA₁), result in months.
+    * If PSA rose (t2 > t1): standard doubling-time formula
+      PSA-DT = (t₂ − t₁) × ln(2) / ln(PSA₂ / PSA₁), in months.
+    * If PSA did not increase (t2 ≤ t1): assigns NaN.
 
-    Produces NaN when either PSA is non-positive or the time interval is zero or negative.
+    Requires ``add_psa_timepoints`` to have been called first.
     """
     df = df_in.copy()
-    required = {"psa-val", "psa-time_since_tx", "tx-date", "mri_1-psa", "mri_1-date"}
+    required = {"psa_t1-val", "psa_t1-date", "psa_t2-val", "psa_t2-date"}
     if not required.issubset(df.columns):
         return df
 
-    psa1 = pd.to_numeric(df["psa-val"], errors="coerce")
-    date1 = pd.to_datetime(df["tx-date"], errors="coerce") + pd.to_timedelta(
-        pd.to_numeric(df["psa-time_since_tx"], errors="coerce"), unit="D"
-    )
-    psa2 = pd.to_numeric(df["mri_1-psa"], errors="coerce")
-    date2 = pd.to_datetime(df["mri_1-date"], errors="coerce")
+    psa1 = pd.to_numeric(df["psa_t1-val"], errors="coerce")
+    date1 = pd.to_datetime(df["psa_t1-date"], errors="coerce")
+    psa2 = pd.to_numeric(df["psa_t2-val"], errors="coerce")
+    date2 = pd.to_datetime(df["psa_t2-date"], errors="coerce")
 
-    df["psa_dt-mri_1-months"] = _psa_doubling_time(psa1, date1, psa2, date2)
+    # PSA rose → compute doubling time
+    dt = _psa_doubling_time(psa1, date1, psa2, date2)
+
+    # PSA did not increase → NaN
+    no_rise = psa2 <= psa1
+    dt[no_rise] = np.nan
+
+    df["psa_dt-rec_mri-months"] = dt
+    return df
+
+
+def add_psa_diff_rec_mri(df_in: pd.DataFrame) -> pd.DataFrame:
+    """Add ``psa_diff-rec_mri-days``: PSA difference between t2 and t1.
+
+    Computed as ``psa_t2-val`` − ``psa_t1-val``.
+
+    Requires ``add_psa_timepoints`` to have been called first.
+    """
+    df = df_in.copy()
+    required = {"psa_t1-val", "psa_t2-val"}
+    if not required.issubset(df.columns):
+        return df
+
+    psa1 = pd.to_numeric(df["psa_t1-val"], errors="coerce")
+    psa2 = pd.to_numeric(df["psa_t2-val"], errors="coerce")
+    df["psa_diff-rec_mri-days"] = psa2 - psa1
     return df
 
 
@@ -229,7 +273,8 @@ def add_all_features(df: pd.DataFrame) -> pd.DataFrame:
     df = add_time_to_bf(df)
     df = add_time_to_recurrence_MRI(df)
     df = add_time_to_biopsy(df)
-    df = add_psa_doubling_time_mri1(df)
+    df = add_psa_timepoints(df)
     df = add_psa_doubling_time_rec_mri(df)
+    df = add_psa_diff_rec_mri(df)
     df = add_bf_to_rec_mri(df)
     return df
