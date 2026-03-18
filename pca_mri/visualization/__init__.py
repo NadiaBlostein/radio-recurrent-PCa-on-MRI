@@ -13,7 +13,7 @@ sankey              Patient exclusion flow (Sankey diagram).
 export_html         Export figures and tables as standalone HTML files.
 """
 from pca_mri.visualization import (
-    DELETE_distributions, timelines, kinetics, descriptive_plots,
+    timelines, kinetics, descriptive_plots,
     interactive, dashboard, sankey, export_html,
 )
 
