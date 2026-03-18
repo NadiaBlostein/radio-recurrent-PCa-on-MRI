@@ -10,13 +10,25 @@ capra_summary(df)          CAPRA score distribution and risk-group breakdown.
 
 from __future__ import annotations
 
+import warnings
 import numpy as np
 import pandas as pd
 from scipy import stats
 
+# pandas 2.0.x deprecated applymap in favour of map on both DataFrame
+# and Styler, but .map wasn't added until 2.1. Suppress until upgrade.
+warnings.filterwarnings(
+    "ignore",
+    message=r"applymap has been deprecated",
+    category=FutureWarning,
+)
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+# Font family matching Plotly's default (used by the Sankey diagram)
+_FONT_FAMILY = '"Open Sans", verdana, arial, sans-serif'
 
 _TX_TYPE_SHORT: dict[str, str] = {
     "Curietherapie LDR": "LDR",
@@ -285,7 +297,7 @@ def style_table(
     data_cols = [c for c in flat.columns if c not in idx_cols and c != p_col]
 
     # Build numeric shadow DataFrame for colour mapping
-    numeric = flat[data_cols].map(_extract_number)
+    numeric = flat[data_cols].applymap(_extract_number)
 
     # Resolve colourmap (supports seaborn names like "flare")
     try:
@@ -356,15 +368,16 @@ def style_table(
         {"selector": "", "props": [
             ("background-color", _BG), ("color", _FG),
             ("border-collapse", "collapse"),
+            ("font-family", _FONT_FAMILY),
         ]},
     ])
 
     # Ensure idx_cols and p-value get plain styling (override gradient)
     plain = f"background-color: {_BG}; color: {_FG}"
     if idx_cols:
-        styler = styler.map(lambda _: plain, subset=idx_cols)
+        styler = styler.applymap(lambda _: plain, subset=idx_cols)
     if p_col:
-        styler = styler.map(lambda _: plain, subset=[p_col])
+        styler = styler.applymap(lambda _: plain, subset=[p_col])
 
     # Add title as caption if present in attrs
     title = table.attrs.get("title")
@@ -382,28 +395,106 @@ def style_table(
 
 
 def missing_data_summary(df: pd.DataFrame) -> pd.DataFrame:
-    """Return a column-level missingness report.
+    """Return a column-level missingness report for all analysis variables.
+
+    Only variables defined in ``_CONTINUOUS`` and ``_CATEGORICAL`` are
+    included.  Row labels use the full descriptive titles.
 
     Returns
     -------
-    DataFrame with columns [Column, N_missing, Pct_missing, N_present],
-    sorted descending by N_missing; only columns with ≥1 missing value
-    are included.
+    DataFrame with columns [Variable, Number missing, Number present, % missing],
+    sorted descending by % missing.
     """
     n = len(df)
-    missing = df.isna().sum()
-    result = pd.DataFrame({
-        "Column": missing.index,
-        "Number missing": missing.values,
-        "Number present": (n - missing).values,
-        "% missing": (100 * missing / n).round(1).values,
-        
-    })
-    return (
-        result[result["Number missing"] > 0]
-        .sort_values("Number missing", ascending=False)
-        .reset_index(drop=True)
+    # Build ordered list: (column, label) from both registries
+    all_vars = list(_CONTINUOUS) + list(_CATEGORICAL)
+
+    rows = []
+    for col, label in all_vars:
+        if col not in df.columns:
+            continue
+        n_miss = int(df[col].isna().sum())
+        rows.append({
+            "Variable": label,
+            "Number missing": n_miss,
+            "Number present": n - n_miss,
+            "% missing": round(100 * n_miss / n, 1),
+        })
+
+    result = pd.DataFrame(rows)
+    return result.sort_values("% missing", ascending=False).reset_index(drop=True)
+
+
+def style_missing_table(
+    table: pd.DataFrame,
+    cmap: str = "YlOrRd",
+) -> "pd.io.formats.style.Styler":
+    """Apply a heatmap gradient to the *% missing* column only.
+
+    Parameters
+    ----------
+    table : pd.DataFrame
+        Output of :func:`missing_data_summary`.
+    cmap : str
+        Matplotlib colourmap name (default ``"YlOrRd"``).
+
+    Returns
+    -------
+    pd.io.formats.style.Styler
+    """
+    import matplotlib.colors as mcolors
+    import matplotlib.cm as mcm
+
+    _BG = "#1a1a2e"
+    _FG = "#e0e0e0"
+    _BORDER = "1px solid #333"
+
+    cm = mcm.get_cmap(cmap)
+    norm = mcolors.Normalize(vmin=0, vmax=100)
+
+    def _color_pct(val):
+        v = float(val) if pd.notna(val) else 0
+        r, g, b, _ = cm(norm(v))
+        lum = 0.299 * r + 0.587 * g + 0.114 * b
+        fg = "white" if lum < 0.5 else "black"
+        return (
+            f"background-color: rgba({int(r*255)},{int(g*255)},{int(b*255)},0.85); "
+            f"color: {fg}"
+        )
+
+    plain = f"background-color: {_BG}; color: {_FG}"
+
+    styler = (
+        table.style
+        .hide(axis="index")
+        .applymap(_color_pct, subset=["% missing"])
+        .applymap(lambda _: plain, subset=["Variable", "Number missing", "Number present"])
+        .set_table_styles([
+            {"selector": "th", "props": [
+                ("background-color", "#0f0f23"), ("color", _FG),
+                ("border", _BORDER), ("padding", "8px 10px"),
+                ("font-weight", "600"),
+            ]},
+            {"selector": "td", "props": [
+                ("border", _BORDER), ("padding", "6px 10px"),
+            ]},
+            {"selector": "", "props": [
+                ("background-color", _BG), ("color", _FG),
+                ("border-collapse", "collapse"),
+                ("font-family", _FONT_FAMILY),
+            ]},
+        ])
+        .set_caption("Missing Data Report")
+        .set_table_styles([
+            {"selector": "caption", "props": [
+                ("font-size", "14px"), ("font-weight", "bold"),
+                ("text-align", "left"), ("padding", "8px 4px"),
+                ("color", _FG),
+            ]},
+        ], overwrite=False)
+        .format({"% missing": "{:.1f}%"})
     )
+    return styler
 
 
 def capra_summary(df: pd.DataFrame) -> pd.DataFrame:
