@@ -251,10 +251,14 @@ def panel_contingency(df: pd.DataFrame) -> go.Figure:
 def panel_diagnostic_metrics(df: pd.DataFrame) -> go.Figure:
     """Horizontal bar chart with 95% CIs for diagnostic accuracy metrics."""
     acc = diagnostic.diagnostic_accuracy(df)
+    acc = acc[acc["metric"] != "Cohen's kappa"].reset_index(drop=True)
 
     fig = go.Figure()
     for _, row in acc.iterrows():
         color = COLORS["tp"] if row["value"] > 0.5 else COLORS["fn"]
+        ci_lower = row["ci_lower"]
+        ci_upper = row["ci_upper"]
+        has_ci = not (np.isnan(ci_lower) or np.isnan(ci_upper))
         fig.add_trace(go.Bar(
             y=[row["metric"]],
             x=[row["value"]],
@@ -262,27 +266,65 @@ def panel_diagnostic_metrics(df: pd.DataFrame) -> go.Figure:
             error_x=dict(
                 type="data",
                 symmetric=False,
-                array=[row["ci_upper"] - row["value"]],
-                arrayminus=[row["value"] - row["ci_lower"]],
-            ) if not np.isnan(row["ci_lower"]) else None,
+                array=[ci_upper - row["value"]],
+                arrayminus=[row["value"] - ci_lower],
+            ) if has_ci else None,
             marker_color=color,
-            text=f"{row['value']:.2f} [{row['ci_lower']:.2f}-{row['ci_upper']:.2f}]",
-            textposition="outside",
             showlegend=False,
-            hovertemplate=f"{row['metric']}: {row['value']:.3f} [95% CI: {row['ci_lower']:.3f}-{row['ci_upper']:.3f}]<extra></extra>",
+            hovertemplate=f"{row['metric']}: {row['value']:.3f} [95% CI: {ci_lower:.3f}-{ci_upper:.3f}]<extra></extra>",
         ))
 
+    # Right-aligned annotation column in paper coordinates so labels never
+    # overlap the bars or error bars regardless of each metric's value.
+    for _, row in acc.iterrows():
+        ci_lower = row["ci_lower"]
+        ci_upper = row["ci_upper"]
+        has_ci = not (np.isnan(ci_lower) or np.isnan(ci_upper))
+        label = (
+            f"{row['value']:.2f} [{ci_lower:.2f}–{ci_upper:.2f}]"
+            if has_ci else f"{row['value']:.2f}"
+        )
+        fig.add_annotation(
+            xref="paper",
+            yref="y",
+            x=1.01,
+            y=row["metric"],
+            text=label,
+            showarrow=False,
+            xanchor="left",
+            yanchor="middle",
+            font=dict(color="#e0e0e0", size=11),
+        )
+
     fig.update_layout(
-        title="Diagnostic Accuracy of MRI (vs Biopsy)",
+        title=dict(text="Diagnostic Accuracy of MRI (vs Biopsy)", font=dict(color="#f2f5fa")),
         xaxis_title="Value",
-        xaxis_range=[0, 1.25],
+        xaxis=dict(range=[0, 1.1], gridcolor="#283442", zerolinecolor="#283442",
+                   tickfont=dict(color="#c8d4e3"), title_font=dict(color="#c8d4e3")),
+        yaxis=dict(gridcolor="#283442", tickfont=dict(color="#c8d4e3")),
         template="plotly_dark",
-        height=380,
+        paper_bgcolor="rgb(17,17,17)",
+        plot_bgcolor="rgb(17,17,17)",
+        height=350,
         barmode="group",
+        margin=dict(l=20, r=220, t=60, b=40),
     )
-    # Reference line at 0.5
-    fig.add_vline(x=0.5, line_dash="dash", line_color="gray", opacity=0.5)
+    fig.add_vline(x=0.5, line_dash="dash", line_color="#808080", opacity=0.5)
     return fig
+
+
+_TX_TYPE_LABELS = {
+    "tx-type_RT":  "  RT vs HDRT (ref)",
+    "tx-type_LDR": "  LDR vs HDRT (ref)",
+}
+
+
+def _format_or_ci(value: float) -> str:
+    if not np.isfinite(value):
+        return "—"
+    if value == 0 or (abs(value) >= 1e4 or (abs(value) > 0 and abs(value) < 1e-2)):
+        return f"{value:.2e}"
+    return f"{value:.2f}"
 
 
 def panel_forest_univariate(df: pd.DataFrame) -> go.Figure:
@@ -293,58 +335,140 @@ def panel_forest_univariate(df: pd.DataFrame) -> go.Figure:
         fig.add_annotation(text="No univariate results available", showarrow=False)
         return fig
 
-    # Cap extreme ORs for display
     uni = uni.copy()
-    uni["or_display"] = uni["or"].clip(upper=50)
-    uni["ci_upper_display"] = uni["ci_upper"].clip(upper=50)
+    uni["or_display"] = uni["or"].clip(lower=0.1, upper=50)
+    uni["ci_upper_display"] = uni["ci_upper"].clip(lower=0.1, upper=50)
+    uni["ci_lower_display"] = uni["ci_lower"].clip(lower=0.1, upper=50)
 
-    uni = uni.sort_values("p_value", ascending=False)
+    def _display_label(row) -> str:
+        if row["param"] in _TX_TYPE_LABELS:
+            return _TX_TYPE_LABELS[row["param"]]
+        if row["label"] == row["param"] or "tx-type" not in row["param"]:
+            return str(row["label"])
+        return str(row["param"])
+
+    uni["display_label"] = uni.apply(_display_label, axis=1)
+
+    # Sort: non-tx-type by p-value (descending), then tx-type variables at the end
+    uni["is_tx_type"] = uni["param"].str.startswith("tx-type_", na=False)
+    uni = uni.sort_values(["is_tx_type", "p_value"], ascending=[True, False]).reset_index(drop=True)
 
     fig = go.Figure()
-    for _, row in uni.iterrows():
+    for idx, (_, row) in enumerate(uni.iterrows()):
         sig = row["p_value"] < 0.05
         color = COLORS["sig"] if sig else COLORS["nonsig"]
-        label = f"{row['label']}" if row["label"] == row["param"] or "tx-type" not in row["param"] else row["param"]
 
         fig.add_trace(go.Scatter(
             x=[row["or_display"]],
-            y=[label],
+            y=[row["display_label"]],
             error_x=dict(
                 type="data",
                 symmetric=False,
                 array=[row["ci_upper_display"] - row["or_display"]],
-                arrayminus=[row["or_display"] - row["ci_lower"]],
+                arrayminus=[row["or_display"] - row["ci_lower_display"]],
+                color="#c8d4e3",
+                thickness=1.5,
+                width=6,
             ),
             mode="markers",
-            marker=dict(size=10, color=color, symbol="diamond"),
+            marker=dict(size=10, color=color, symbol="diamond",
+                        line=dict(width=1, color="#ffffff")),
             showlegend=False,
             hovertemplate=(
-                f"<b>{row['label']}</b><br>"
+                f"<b>{row['display_label'].strip()}</b><br>"
                 f"OR: {row['or']:.2f} [{row['ci_lower']:.2f}-{row['ci_upper']:.2f}]<br>"
                 f"p = {row['p_value']:.3f} (adj: {row['p_adj']:.3f})<br>"
                 f"N = {row['n']}<extra></extra>"
             ),
         ))
 
-    fig.add_vline(x=1, line_dash="dash", line_color="gray")
+    # Right-margin annotations: OR, 95% CI, and p-value for each predictor.
+    for idx, (_, row) in enumerate(uni.iterrows()):
+        or_txt = _format_or_ci(row["or"])
+        lo_txt = _format_or_ci(row["ci_lower"])
+        hi_txt = _format_or_ci(row["ci_upper"])
+        p_val = row["p_value"]
+        p_txt = "< 0.001" if p_val < 0.001 else f"{p_val:.3f}"
+        text = f"OR {or_txt} ({lo_txt}–{hi_txt}), p = {p_txt}"
+        fig.add_annotation(
+            xref="paper",
+            yref="y",
+            x=1.01,
+            y=row["display_label"],
+            text=text,
+            showarrow=False,
+            xanchor="left",
+            yanchor="middle",
+            font=dict(color="#e0e0e0", size=11),
+        )
+
+    fig.add_vline(x=1, line_dash="dash", line_color="#808080", opacity=0.6)
     fig.update_layout(
-        title="Univariate Logistic Regression — Odds Ratios for MRI+ Recurrence",
-        xaxis_title="Odds Ratio (log scale)",
-        xaxis_type="log",
-        xaxis_range=[np.log10(0.1), np.log10(55)],
+        title=dict(text="Univariate Logistic Regression — Odds Ratios for MRI+ Recurrence",
+                   font=dict(color="#f2f5fa"), x=0.05, xanchor="left"),
+        xaxis=dict(
+            title=dict(text="Odds Ratio (log scale)", font=dict(color="#c8d4e3")),
+            type="log",
+            range=[np.log10(0.08), np.log10(60)],
+            gridcolor="#283442",
+            zerolinecolor="#283442",
+            tickfont=dict(color="#c8d4e3", size=11),
+            linecolor="#506784",
+            showline=True,
+            mirror=True,
+        ),
+        yaxis=dict(
+            gridcolor="#283442",
+            tickfont=dict(color="#c8d4e3", size=11),
+            automargin=True,
+            linecolor="#506784",
+            showline=True,
+            mirror=True,
+        ),
         template="plotly_dark",
-        height=max(400, len(uni) * 35),
+        paper_bgcolor="rgb(17,17,17)",
+        plot_bgcolor="rgb(17,17,17)",
+        height=max(420, len(uni) * 38),
+        margin=dict(l=20, r=350, t=80, b=70),
     )
 
-    # Add significance legend manually
+    # Significance legend
     fig.add_trace(go.Scatter(x=[None], y=[None], mode="markers",
                              marker=dict(size=10, color=COLORS["sig"], symbol="diamond"),
                              name="p < 0.05"))
     fig.add_trace(go.Scatter(x=[None], y=[None], mode="markers",
                              marker=dict(size=10, color=COLORS["nonsig"], symbol="diamond"),
-                             name="p >= 0.05"))
-    fig.update_layout(showlegend=True, legend=dict(x=0.75, y=0.05))
+                             name="p ≥ 0.05"))
+    fig.update_layout(
+        showlegend=True,
+        legend=dict(
+            orientation="h",
+            x=0.5, y=-0.12,
+            xanchor="center", yanchor="top",
+            bgcolor="rgba(17,17,17,0.6)",
+            bordercolor="#506784", borderwidth=1,
+            font=dict(color="#e0e0e0", size=11),
+        ),
+    )
     return fig
+
+
+# Friendly labels for raw column names used in the multivariable model
+_PREDICTOR_LABELS = {
+    "tx-age": "Age at treatment",
+    "psa-val": "PSA at diagnosis",
+    "tx-gleason_total": "Gleason score",
+    "tx-t_stage": "Clinical T-stage",
+    "tx-biopsy_positive_ratio": "Positive biopsy core ratio",
+    "bf-time_to_bf-days": "Time to biochemical failure (days)",
+    "psa-capra_total": "CAPRA score",
+    "tx-adt": "ADT use",
+    "psa-nadir_05": "PSA nadir < 0.5",
+    "mri_1-prostate_vol": "Prostate volume at MRI 1 (cc)",
+    "mri_1-psa": "PSA at MRI 1 (ng/mL)",
+    "psa_diff-rec_mri-days": "PSA difference to recurrence MRI",
+    "psa_dt-rec_mri-months": "PSA-DT to recurrence MRI (months)",
+}
 
 
 def panel_multivariable_summary(mv_result: dict) -> go.Figure:
@@ -352,13 +476,18 @@ def panel_multivariable_summary(mv_result: dict) -> go.Figure:
     summary = mv_result["summary"]
     if summary.empty:
         fig = go.Figure()
-        fig.add_annotation(text="No multivariable results", showarrow=False)
+        fig.add_annotation(text="No multivariate results", showarrow=False)
         return fig
 
     summary = summary.copy()
-    summary["or_display"] = summary["or"].clip(upper=50)
-    summary["ci_upper_display"] = summary["ci_upper"].clip(upper=50)
+    summary["or_display"] = summary["or"].clip(lower=0.1, upper=50)
+    summary["ci_upper_display"] = summary["ci_upper"].clip(lower=0.1, upper=50)
+    summary["ci_lower_display"] = summary["ci_lower"].clip(lower=0.1, upper=50)
     summary = summary.sort_values("p_value", ascending=False)
+
+    summary["display_label"] = summary["predictor"].map(
+        lambda p: _PREDICTOR_LABELS.get(p, p)
+    )
 
     fig = go.Figure()
     for _, row in summary.iterrows():
@@ -366,47 +495,106 @@ def panel_multivariable_summary(mv_result: dict) -> go.Figure:
         color = COLORS["sig"] if sig else COLORS["nonsig"]
         fig.add_trace(go.Scatter(
             x=[row["or_display"]],
-            y=[row["predictor"]],
+            y=[row["display_label"]],
             error_x=dict(
                 type="data",
                 symmetric=False,
                 array=[row["ci_upper_display"] - row["or_display"]],
-                arrayminus=[row["or_display"] - row["ci_lower"]],
+                arrayminus=[row["or_display"] - row["ci_lower_display"]],
+                color="#c8d4e3",
+                thickness=1.5,
+                width=6,
             ),
             mode="markers",
-            marker=dict(size=12, color=color, symbol="diamond"),
+            marker=dict(size=12, color=color, symbol="diamond",
+                        line=dict(width=1, color="#ffffff")),
             showlegend=False,
             hovertemplate=(
-                f"<b>{row['predictor']}</b><br>"
+                f"<b>{row['display_label']}</b><br>"
                 f"OR: {row['or']:.2f} [{row['ci_lower']:.2f}-{row['ci_upper']:.2f}]<br>"
                 f"p = {row['p_value']:.3f}<extra></extra>"
             ),
         ))
 
-    fig.add_vline(x=1, line_dash="dash", line_color="gray")
+    # Right-margin OR (CI), p-value annotations — matches Figure 3 styling.
+    for _, row in summary.iterrows():
+        or_txt = _format_or_ci(row["or"])
+        lo_txt = _format_or_ci(row["ci_lower"])
+        hi_txt = _format_or_ci(row["ci_upper"])
+        p_val = row["p_value"]
+        p_txt = "< 0.001" if p_val < 0.001 else f"{p_val:.3f}"
+        fig.add_annotation(
+            xref="paper",
+            yref="y",
+            x=1.01,
+            y=row["display_label"],
+            text=f"OR {or_txt} ({lo_txt}–{hi_txt}), p = {p_txt}",
+            showarrow=False,
+            xanchor="left",
+            yanchor="middle",
+            font=dict(color="#e0e0e0", size=11),
+        )
 
-    # Annotate model stats
+    fig.add_vline(x=1, line_dash="dash", line_color="#808080", opacity=0.6)
+
+    # Model stats annotation (bottom-left, paper coordinates)
     auc = mv_result.get("roc_auc", np.nan)
     r2 = mv_result.get("pseudo_r2", np.nan)
     hl_stat, hl_p = mv_result.get("hosmer_lemeshow", (np.nan, np.nan))
-    annotation_text = (
+    stats_text = (
         f"AUC = {auc:.3f} | Pseudo-R² = {r2:.3f}<br>"
         f"Hosmer-Lemeshow: χ² = {hl_stat:.2f}, p = {hl_p:.3f}<br>"
         f"N = {mv_result['n']}, events = {mv_result['n_events']}"
     )
     fig.add_annotation(
-        x=0.95, y=0.05, xref="paper", yref="paper",
-        text=annotation_text, showarrow=False,
-        font=dict(size=11), align="right",
-        bgcolor="rgba(30,30,30,0.8)", bordercolor="gray",
+        x=0.01, y=-0.22, xref="paper", yref="paper",
+        text=stats_text, showarrow=False,
+        font=dict(size=11, color="#e0e0e0"), align="left",
+        xanchor="left", yanchor="top",
+        bgcolor="rgba(17,17,17,0.6)", bordercolor="#506784", borderwidth=1,
     )
 
     fig.update_layout(
-        title="Multivariable Logistic Regression — Adjusted Odds Ratios",
-        xaxis_title="Adjusted Odds Ratio (log scale)",
-        xaxis_type="log",
+        title=dict(text="Multivariate Logistic Regression — Adjusted Odds Ratios",
+                   font=dict(color="#f2f5fa")),
+        xaxis=dict(
+            title=dict(text="Adjusted Odds Ratio (log scale)",
+                       font=dict(color="#c8d4e3")),
+            type="log",
+            range=[np.log10(0.08), np.log10(60)],
+            gridcolor="#283442",
+            zerolinecolor="#283442",
+            tickfont=dict(color="#c8d4e3"),
+        ),
+        yaxis=dict(
+            gridcolor="#283442",
+            tickfont=dict(color="#c8d4e3"),
+            automargin=True,
+        ),
         template="plotly_dark",
-        height=max(350, len(summary) * 50),
+        paper_bgcolor="rgb(17,17,17)",
+        plot_bgcolor="rgb(17,17,17)",
+        height=max(420, len(summary) * 50),
+        margin=dict(l=20, r=320, t=60, b=130),
+    )
+
+    # Significance legend (matches Figure 3)
+    fig.add_trace(go.Scatter(x=[None], y=[None], mode="markers",
+                             marker=dict(size=12, color=COLORS["sig"], symbol="diamond"),
+                             name="p < 0.05"))
+    fig.add_trace(go.Scatter(x=[None], y=[None], mode="markers",
+                             marker=dict(size=12, color=COLORS["nonsig"], symbol="diamond"),
+                             name="p ≥ 0.05"))
+    fig.update_layout(
+        showlegend=True,
+        legend=dict(
+            orientation="h",
+            x=0.5, y=-0.12,
+            xanchor="center", yanchor="top",
+            bgcolor="rgba(17,17,17,0.6)",
+            bordercolor="#506784", borderwidth=1,
+            font=dict(color="#e0e0e0"),
+        ),
     )
     return fig
 
